@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PULSE</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: monospace; }
+    canvas { display: block; }
+
+    #hud {
+      position: fixed; top: 20px; left: 20px;
+      color: #fff; font-size: 13px; line-height: 1.8;
+      pointer-events: none; user-select: none;
+    }
+    #bpm-bar-wrap {
+      width: 160px; height: 6px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 3px; margin-top: 4px;
+    }
+    #bpm-bar {
+      height: 100%; border-radius: 3px;
+      background: #1D9E75;
+      transition: width 0.2s, background 0.3s;
+    }
+    #stage-label {
+      margin-top: 6px; font-size: 11px;
+      letter-spacing: 0.1em; opacity: 0.7;
+    }
+    #keys-hint {
+      position: fixed; bottom: 20px; left: 20px;
+      color: rgba(255,255,255,0.3); font-size: 11px;
+      pointer-events: none;
+    }
+    #gameover {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(20,0,0,0.85);
+      display: none; align-items: center; justify-content: center;
+      flex-direction: column; z-index: 10;
+      cursor: pointer;
+    }
+    #gameover h1 {
+      color: #b00; font-size: 64px; letter-spacing: 0.2em;
+      text-shadow: 0 0 20px #f00;
+    }
+    #gameover p {
+      color: #ccc; margin-top: 16px; font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="hud">
+  <div id="bpm-display">♥ <span id="bpm-val">72</span> BPM</div>
+  <div id="bpm-bar-wrap"><div id="bpm-bar" style="width:20%"></div></div>
+  <div id="stage-label">CALM — sonar vision</div>
+</div>
+
+<div id="keys-hint">WASD 이동 &nbsp;|&nbsp; 마우스 시점 &nbsp;|&nbsp; Shift 달리기 &nbsp;|&nbsp; C 살금살금 이동</div>
+
+<div id="gameover">
+  <h1>YOU DIED</h1>
+  <p>클릭하면 처음부터 다시 시작합니다</p>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+
+// 1. 기본 씬 세팅
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 1.6, 21);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// 2. 컨트롤 (PointerLock)
+const controls = new PointerLockControls(camera, document.body);
+
+const listener = new THREE.AudioListener();
+camera.add(listener);
+document.body.addEventListener('click', () => {
+  if (!controls.isLocked) {
+    controls.lock();
+    if (listener.context.state === 'suspended') listener.context.resume();
+  } else {
+    attemptAttack();
+  }
+});
+
+const keys = {};
+document.addEventListener('keydown', e => keys[e.code] = true);
+document.addEventListener('keyup',   e => keys[e.code] = false);
+
+// 3. 맵 생성
+const roomMat  = new THREE.MeshLambertMaterial({ color: 0x222222 });
+const crateMat = new THREE.MeshLambertMaterial({ color: 0x4a3a22 });
+
+const HOUSE_HALF_X = 18;
+const HOUSE_HALF_Z = 24;
+const WALL_THICK   = 0.4;
+const WALL_HEIGHT  = 6;
+const CORR_HALF    = 2.4;
+const BAY_CX       = 10.2;
+const BAY_CZ       = 16;
+
+const floorGeo = new THREE.PlaneGeometry(HOUSE_HALF_X * 2 + 0.6, HOUSE_HALF_Z * 2 + 0.6);
+const floor = new THREE.Mesh(floorGeo, roomMat);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const ceiling = new THREE.Mesh(floorGeo, roomMat);
+ceiling.rotation.x = Math.PI / 2;
+ceiling.position.y = WALL_HEIGHT;
+ceiling.receiveShadow = true;
+scene.add(ceiling);
+
+const walls = [];
+function addBox(cx, cz, sizeX, sizeZ, height, mat) {
+  const box = new THREE.Mesh(new THREE.BoxGeometry(sizeX, height, sizeZ), mat);
+  box.position.set(cx, height / 2, cz);
+  box.castShadow = true;
+  box.receiveShadow = true;
+  box.userData.hx = sizeX / 2;
+  box.userData.hy = height / 2;
+  box.userData.hz = sizeZ / 2;
+  scene.add(box);
+  walls.push(box);
+  return box;
+}
+const addWall  = (cx, cz, sizeX, sizeZ) => addBox(cx, cz, sizeX, sizeZ, WALL_HEIGHT, roomMat);
+const addCrate = (cx, cz, size = 1.8, height = 1.8) => addBox(cx, cz, size, size, height, crateMat);
+
+addWall(0, -HOUSE_HALF_Z, HOUSE_HALF_X * 2 + WALL_THICK, WALL_THICK);
+addWall(0,  HOUSE_HALF_Z, HOUSE_HALF_X * 2 + WALL_THICK, WALL_THICK);
+addWall(-HOUSE_HALF_X, 0, WALL_THICK, HOUSE_HALF_Z * 2 + WALL_THICK);
+addWall( HOUSE_HALF_X, 0, WALL_THICK, HOUSE_HALF_Z * 2 + WALL_THICK);
+
+[-CORR_HALF, CORR_HALF].forEach(cx => {
+  addWall(cx, -21.2, WALL_THICK, 5.6);
+  addWall(cx,  -8.0, WALL_THICK, 11.2);
+  addWall(cx,   8.0, WALL_THICK, 11.2);
+  addWall(cx,  21.2, WALL_THICK, 5.6);
+});
+
+[-BAY_CX, BAY_CX].forEach(cx => {
+  addWall(cx, -8, 15.6, WALL_THICK);
+  addWall(cx,  8, 15.6, WALL_THICK);
+});
+
+const BAY_CENTERS = [-BAY_CZ, 0, BAY_CZ].flatMap(cz => [[-BAY_CX, cz], [BAY_CX, cz]]);
+BAY_CENTERS.forEach(([cx, cz]) => {
+  const out = Math.sign(cx);
+  addCrate(cx + out * 4, cz + 3);
+  addCrate(cx + out * 4, cz - 3);
+});
+
+// 4. 조명 시스템 (DDGI 시뮬레이션)
+const ambientLight = new THREE.AmbientLight(0x112233, 0.0);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.2);
+dirLight.position.set(5, 10, 5);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(1024, 1024);
+scene.add(dirLight);
+
+const probeGrid = { x: 3, y: 1, z: 3 };
+const probeSpacing = 16;
+const lightProbes = [];
+
+for (let ix = 0; ix < probeGrid.x; ix++) {
+  for (let iy = 0; iy < probeGrid.y; iy++) {
+    for (let iz = 0; iz < probeGrid.z; iz++) {
+      const probe = new THREE.LightProbe();
+      probe.position.set(
+        (ix - 1) * probeSpacing,
+        1 + iy * 2,
+        (iz - 1) * probeSpacing
+      );
+      probe.sh.coefficients[0].set(0.05, 0.04, 0.06);
+      probe.intensity = 0.0;
+      scene.add(probe);
+      lightProbes.push(probe);
+    }
+  }
+}
+
+const pointLights = [];
+const plPositions = BAY_CENTERS.map(([x, z]) => [x, 4, z]);
+plPositions.forEach(([x,y,z]) => {
+  const pl = new THREE.PointLight(0x334466, 0, 25);
+  pl.position.set(x, y, z);
+  scene.add(pl);
+  pointLights.push(pl);
+});
+
+// 5. 심박수(BPM) 시스템
+const BPM = {
+  current: 72,
+  target: 72,
+  min: 60,
+  max: 160,
+
+  getStage() {
+    if (this.current < 90)  return 'calm';
+    if (this.current < 130) return 'tense';
+    return 'panic';
+  },
+
+  getNormalized() {
+    return (this.current - this.min) / (this.max - this.min);
+  },
+
+  update(dt) {
+    this.current += (this.target - this.current) * dt * 1.2;
+    this.current = Math.max(this.min, Math.min(this.max, this.current));
+
+    const moving   = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'];
+    const running  = moving && keys['ShiftLeft'];
+    const sneaking = moving && keys['KeyC'] && !keys['ShiftLeft'];
+    if (running)       this.target = Math.min(this.max, this.target + dt * 30);
+    else if (sneaking) this.target = Math.max(72, this.target - dt * 2);
+    else if (moving) {
+      if (this.target < 100) this.target = Math.min(100, this.target + dt * 10);
+      else                   this.target = Math.max(100, this.target - dt * 3);
+    }
+    else                this.target = Math.max(72, this.target - dt * 3);
+  }
+};
+
+// 6. 소나 파동 — 오버레이 셰이더
+const MAX_PULSES = 16;
+
+const sonarVert = `
+varying vec3 vWorldPos;
+void main() {
+  vec4 wp    = modelMatrix * vec4(position, 1.0);
+  vWorldPos  = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+
+const sonarFrag = `
+precision highp float;
+varying vec3 vWorldPos;
+uniform vec3  uCenters[${MAX_PULSES}];
+uniform float uRadii[${MAX_PULSES}];
+uniform vec3  uColors[${MAX_PULSES}];
+uniform float uWaveWidth;
+uniform float uAttenK;
+void main() {
+  vec3  col   = vec3(0.0);
+  float total = 0.0;
+  for (int i = 0; i < ${MAX_PULSES}; i++) {
+    float r = uRadii[i];
+    if (r < 0.0) continue;
+    float dist = length(vWorldPos.xz - uCenters[i].xz);
+    float wave = 1.0 - smoothstep(0.0, uWaveWidth, abs(dist - r));
+    float atten = 1.0 / (1.0 + r * r * uAttenK);
+    col   += uColors[i] * wave * atten;
+    total += wave * atten;
+  }
+  if (total < 0.005) discard;
+  col = min(col, vec3(1.0));
+  gl_FragColor = vec4(col, min(total * 1.2, 1.0));
+}`;
+
+const sonarUniforms = {
+  uCenters:   { value: Array.from({length: MAX_PULSES}, () => new THREE.Vector3()) },
+  uRadii:     { value: new Float32Array(MAX_PULSES).fill(-1) },
+  uColors:    { value: Array.from({length: MAX_PULSES}, () => new THREE.Vector3()) },
+  uWaveWidth: { value: 0.28 },
+  uAttenK:    { value: 0.05 },
+};
+
+const sonarMat = new THREE.ShaderMaterial({
+  vertexShader:   sonarVert,
+  fragmentShader: sonarFrag,
+  uniforms:       sonarUniforms,
+  transparent:    true,
+  depthWrite:     false,
+  depthTest:      true,
+  side:           THREE.DoubleSide,
+});
+
+const enemyGhostFrag = `
+precision highp float;
+varying vec3 vWorldPos;
+uniform vec3  uCenters[${MAX_PULSES}];
+uniform float uRadii[${MAX_PULSES}];
+uniform vec3  uColors[${MAX_PULSES}];
+uniform float uWaveWidth;
+uniform float uAttenK;
+void main() {
+  vec3  col   = vec3(0.0);
+  float total = 0.0;
+  for (int i = 0; i < ${MAX_PULSES}; i++) {
+    float r = uRadii[i];
+    if (r < 0.0) continue;
+    float dist = length(vWorldPos.xz - uCenters[i].xz);
+    float wave = 1.0 - smoothstep(0.0, uWaveWidth, abs(dist - r));
+    float atten = 1.0 / (1.0 + r * r * uAttenK);
+    col   += uColors[i] * wave * atten;
+    total += wave * atten;
+  }
+  if (total < 0.005) {
+    gl_FragColor = vec4(0.5, 0.08, 0.08, 0.04);
+    return;
+  }
+  col = min(col, vec3(1.0));
+  gl_FragColor = vec4(col, min(total * 1.2, 1.0));
+}`;
+
+const enemyGhostVert = `
+#include <skinning_pars_vertex>
+varying vec3 vWorldPos;
+void main() {
+  #include <skinbase_vertex>
+  #include <begin_vertex>
+  #include <skinning_vertex>
+  vec4 wp    = modelMatrix * vec4(transformed, 1.0);
+  vWorldPos  = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+
+const enemyGhostMat = new THREE.ShaderMaterial({
+  vertexShader:   enemyGhostVert,
+  fragmentShader: enemyGhostFrag,
+  uniforms:       sonarUniforms,
+  transparent:    true,
+  depthWrite:     false,
+  depthTest:      true,
+  side:           THREE.DoubleSide,
+  skinning:       true,
+});
+
+function addSonarOverlays() {
+  const floorOverlay = new THREE.Mesh(
+    new THREE.PlaneGeometry(HOUSE_HALF_X * 2 + 0.6, HOUSE_HALF_Z * 2 + 0.6),
+    sonarMat
+  );
+  floorOverlay.rotation.x = -Math.PI / 2;
+  floorOverlay.position.y = 0.02;
+  floorOverlay.renderOrder = 1;
+  scene.add(floorOverlay);
+
+  const EPS = 0.02;
+  walls.forEach(w => {
+    const { hx, hy, hz } = w.userData;
+    const cy = w.position.y;
+    if (hx > hz * 0.3) {
+      [1, -1].forEach(sign => {
+        const p = new THREE.Mesh(new THREE.PlaneGeometry(hx * 2, hy * 2), sonarMat);
+        p.position.set(w.position.x, cy, w.position.z + sign * (hz + EPS));
+        p.renderOrder = 1;
+        scene.add(p);
+      });
+    }
+    if (hz > hx * 0.3) {
+      [1, -1].forEach(sign => {
+        const p = new THREE.Mesh(new THREE.PlaneGeometry(hz * 2, hy * 2), sonarMat);
+        p.position.set(w.position.x + sign * (hx + EPS), cy, w.position.z);
+        p.rotation.y = Math.PI / 2;
+        p.renderOrder = 1;
+        scene.add(p);
+      });
+    }
+  });
+}
+
+const PULSE_POOL_SIZE = 12;
+const lightPool = [];
+for (let i = 0; i < PULSE_POOL_SIZE; i++) {
+  const pl = new THREE.PointLight(0xffffff, 0, 0);
+  pl.visible = false;
+  scene.add(pl);
+  lightPool.push({ light: pl, inUse: false });
+}
+function getPooledLight() { return lightPool.find(l => !l.inUse) || null; }
+
+const pulseRings   = [];
+const activePulses = [];
+
+const _lookMatrix = new THREE.Matrix4();
+const _lookQuat   = new THREE.Quaternion();
+const _lookFlatTarget = new THREE.Vector3();
+const _handWorldPos   = new THREE.Vector3();
+
+const _rc = new THREE.Raycaster();
+function getCollisionPoints(cx, cz, radius, prevRadius) {
+  const hits = [];
+  const origin = new THREE.Vector3(cx, 1.0, cz);
+  const DIRS = 16;
+  for (let i = 0; i < DIRS; i++) {
+    const angle = (i / DIRS) * Math.PI * 2;
+    const dir   = new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle));
+    _rc.set(origin, dir);
+    _rc.far = radius + 0.5;
+    const wallHits = _rc.intersectObjects(walls, false);
+    if (wallHits.length > 0) {
+      const d = wallHits[0].distance;
+      if (d >= prevRadius - 0.2 && d <= radius + 0.3)
+        hits.push(wallHits[0].point.clone());
+    }
+  }
+  return hits;
+}
+
+class Pulse {
+  constructor(originPos, color, maxDist, speed, isEnemy, isReflect = false) {
+    this.ox         = originPos.x;
+    this.oy         = originPos.y;
+    this.oz         = originPos.z;
+    this.maxDist    = maxDist;
+    this.speed      = speed;
+    this.isEnemy    = isEnemy;
+    this.isReflect  = isReflect;
+    this.radius     = 0.1;
+    this.prevRadius = 0.0;
+    this.dead       = false;
+    this.color      = new THREE.Color(color);
+    this._collided  = new Set();
+
+    this.slot = -1;
+    for (let i = 0; i < MAX_PULSES; i++) {
+      if (sonarUniforms.uRadii.value[i] < 0) { this.slot = i; break; }
+    }
+    if (this.slot >= 0) {
+      sonarUniforms.uCenters.value[this.slot].set(this.ox, this.oy, this.oz);
+      sonarUniforms.uColors.value[this.slot].set(this.color.r, this.color.g, this.color.b);
+      sonarUniforms.uRadii.value[this.slot] = this.radius;
+    }
+
+    this.pe = isEnemy ? getPooledLight() : null;
+    if (this.pe) {
+      this.pe.inUse = true;
+      this.pe.light.color.set(color);
+      this.pe.light.intensity = 2.0;
+      this.pe.light.distance  = 1;
+      this.pe.light.position.set(this.ox, 1.5, this.oz);
+      this.pe.light.visible = true;
+    }
+  }
+
+  update(dt) {
+    this.prevRadius = this.radius;
+    this.radius    += this.speed * dt;
+    const life = 1 - this.radius / this.maxDist;
+    if (life <= 0 || this.slot < 0) { this.dead = true; return; }
+
+    const fade = this.isEnemy
+      ? 1.0 - Math.pow(this.radius / this.maxDist, 2)
+      : (life < 0.12 ? life / 0.12 : 1.0);
+    const c    = this.color;
+    sonarUniforms.uRadii.value[this.slot] = this.radius;
+    sonarUniforms.uColors.value[this.slot].set(c.r * fade, c.g * fade, c.b * fade);
+
+    if (this.pe) {
+      this.pe.light.distance  = this.radius * 1.5 + 0.5;
+      this.pe.light.intensity = fade * 2.0;
+    }
+
+    if (!this.isReflect && !this.isEnemy) {
+      const hits = getCollisionPoints(this.ox, this.oz, this.radius, this.prevRadius);
+      hits.forEach(pt => {
+        const key = `${Math.round(pt.x)}_${Math.round(pt.z)}`;
+        if (this._collided.has(key)) return;
+        this._collided.add(key);
+        activePulses.push(new Pulse(
+          pt, this.color.getHex(),
+          this.maxDist * 0.4, this.speed * 0.8,
+          false, true
+        ));
+      });
+    }
+  }
+
+  dispose() {
+    if (this.slot >= 0) sonarUniforms.uRadii.value[this.slot] = -1;
+    if (this.pe) {
+      this.pe.light.intensity = 0;
+      this.pe.light.visible   = false;
+      this.pe.inUse           = false;
+    }
+  }
+}
+
+function spawnPulse(originPos, color, maxDist, isEnemy, speed) {
+  activePulses.push(new Pulse(originPos, color, maxDist, speed, isEnemy));
+}
+
+let sonarApplied = false;
+function updateRays(dt) {
+  if (!sonarApplied) { addSonarOverlays(); sonarApplied = true; }
+  for (let i = activePulses.length - 1; i >= 0; i--) {
+    activePulses[i].update(dt);
+    if (activePulses[i].dead) { activePulses[i].dispose(); activePulses.splice(i, 1); }
+  }
+}
+
+function getPulseMaxDist() {
+  let m = 0;
+  for (const p of activePulses) if (!p.isEnemy && p.radius > m) m = p.radius;
+  return m;
+}
+
+const STAGE_COLORS = { calm: 0x1D9E75, tense: 0x378ADD, panic: 0xEF9F27 };
+
+const heartbeatLight = new THREE.PointLight(0xffffff, 0, 40);
+heartbeatLight.decay = 1;
+heartbeatLight.castShadow = true;
+scene.add(heartbeatLight);
+let heartbeatElapsed   = Infinity;
+const HEARTBEAT_ATTACK  = 0.03;
+const HEARTBEAT_RELEASE = 0.7;
+function triggerHeartbeatGlow() {
+  heartbeatElapsed = 0;
+  heartbeatLight.color.set(STAGE_COLORS[BPM.getStage()]);
+  const mySnd = myHeartbeatPool[myHeartbeatVoiceIdx];
+  myHeartbeatVoiceIdx = (myHeartbeatVoiceIdx + 1) % myHeartbeatPool.length;
+  mySnd.setVolume(THREE.MathUtils.lerp(0.3, 1.0, BPM.getNormalized()));
+  if (mySnd.isPlaying) mySnd.stop();
+  mySnd.play();
+}
+
+const SNEAK_PULSE_SCALE = 0.2;
+function spawnPlayerFootstepPulse() {
+  const stage    = BPM.getStage();
+  const norm     = BPM.getNormalized();
+  const sizeMul  = playerSneaking ? SNEAK_PULSE_SCALE : 1;
+  spawnPulse(camera.position, STAGE_COLORS[stage],
+    THREE.MathUtils.lerp(9, 15, norm) * sizeMul,
+    false, THREE.MathUtils.lerp(5, 14, norm) * sizeMul);
+}
+
+function spawnEnemyPulse(enemy) {
+  const norm = Math.min(1, (enemy.bpm - 40) / 120);
+  spawnPulse(enemy.mesh.position, 0xdd2222,
+    THREE.MathUtils.lerp(2.7, 4.7, norm),
+    true, THREE.MathUtils.lerp(3, 7, norm));
+}
+
+// 7. 적(Enemy) 시스템
+const enemies  = [];
+
+const DETECTION_THRESHOLD = 100;
+const HEARING_RADIUS      = 5;
+const MOVE_NOISE_RATE     = 60;
+const PULSE_TOUCH_GAIN    = 50;
+const DETECTION_DECAY     = 15;
+const ALERT_LOSE_TIMEOUT  = 5;
+const ARRIVE_DIST         = 0.5;
+const ENEMY_ATTACK_RANGE     = 0.9;
+const ENEMY_ATTACK_HIT_RADIUS = 0.6;
+const INFECT_RADIUS       = 8;
+
+const DORMANT_DURATION   = () => 5 + Math.random() * 2;
+const SEARCHING_DURATION = () => 3 + Math.random() * 2;
+const WARY_DURATION      = () => 2 + Math.random() * 1;
+
+const SEARCHING_BEAT_INTERVAL = 1.5;
+const WARY_BEAT_INTERVAL      = 0.5;
+const AWAKENED_BEAT_INTERVAL  = 0.3;
+
+const audioLoader = new THREE.AudioLoader();
+const heartbeatBuffer   = await audioLoader.loadAsync('sounds/moster_heartbeat.wav');
+const myHeartbeatBuffer = await audioLoader.loadAsync('sounds/myheartbeat.wav');
+
+const myHeartbeatPool = Array.from({ length: 2 }, () => {
+  const snd = new THREE.Audio(listener);
+  snd.setBuffer(myHeartbeatBuffer);
+  return snd;
+});
+let myHeartbeatVoiceIdx = 0;
+
+const enemyAwakenMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
+
+const HEARTBEAT_VOICES = 4;
+
+const ENEMY_HEIGHT = 1.8;
+const SEIZURE_STAND_FIX_X = Math.PI / 2;
+const SEIZURE_STAND_FIX_Y = ENEMY_HEIGHT * 0.55;
+const SEIZURE_STAND_FIX_Z = -ENEMY_HEIGHT * 0.6;
+const fbxLoader = new FBXLoader();
+const enemyModelTemplate = await fbxLoader.loadAsync('models/Ch10_nonPBR.fbx');
+const enemyModelLights = [];
+enemyModelTemplate.traverse(o => { if (o.isLight) enemyModelLights.push(o); });
+enemyModelLights.forEach(l => l.parent.remove(l));
+const enemyModelBox     = new THREE.Box3().setFromObject(enemyModelTemplate);
+const enemyModelScale   = ENEMY_HEIGHT / (enemyModelBox.max.y - enemyModelBox.min.y);
+const enemyModelYOffset = -enemyModelBox.min.y * enemyModelScale;
+
+const MIXAMO_BONE_PREFIX = 'mixamorig5';
+function remapMixamoTrackNames(clip) {
+  clip.tracks.forEach(track => {
+    track.name = track.name.replace(/^mixamorig/, MIXAMO_BONE_PREFIX);
+  });
+  return clip;
+}
+
+function stripRootHorizontalMotion(clip) {
+  const track = clip.tracks.find(t => t.name === `${MIXAMO_BONE_PREFIX}Hips.position`);
+  if (!track) return clip;
+  const v = track.values;
+  const baseX = v[0];
+  const baseZ = v[2];
+  for (let i = 0; i < v.length; i += 3) {
+    v[i]     = baseX;
+    v[i + 2] = baseZ;
+  }
+  return clip;
+}
+const enemyAnimFiles = {
+  idle:    'Zombie Idle.fbx',
+  seizure: 'Laying Seizure.fbx',
+  punch:   'Zombie Punching.fbx',
+  scream:  'Zombie Scream.fbx',
+  run:     'Zombie Run.fbx',
+};
+const enemyClips = {};
+for (const [key, file] of Object.entries(enemyAnimFiles)) {
+  const animFbx = await fbxLoader.loadAsync(encodeURI(`models/${file}`));
+  enemyClips[key] = stripRootHorizontalMotion(remapMixamoTrackNames(animFbx.animations[0]));
+}
+
+function setMeshMaterial(root, mat) {
+  root.traverse(o => { if (o.isMesh) o.material = mat; });
+}
+function createEnemyModel() {
+  const wrapper = new THREE.Group();
+  const yawFix = new THREE.Group();
+  yawFix.rotation.y = Math.PI;
+  const model = cloneSkeleton(enemyModelTemplate);
+  model.scale.setScalar(enemyModelScale);
+  model.position.y = enemyModelYOffset;
+  model.traverse(o => { if (o.isMesh) o.castShadow = false; });
+  yawFix.add(model);
+  wrapper.add(yawFix);
+  return { wrapper, model };
+}
+
+class Enemy {
+  constructor(x, z) {
+    const { wrapper, model } = createEnemyModel();
+    this.mesh = wrapper;
+    this.bodyModel = model;
+    this.mesh.position.set(x, 0, z);
+    setMeshMaterial(this.mesh, enemyGhostMat);
+    scene.add(this.mesh);
+
+    this.mixer = new THREE.AnimationMixer(model);
+    this.actions = {};
+    for (const [key, clip] of Object.entries(enemyClips)) {
+      const action = this.mixer.clipAction(clip);
+      if (key === 'punch' || key === 'scream') {
+        action.setLoop(THREE.LoopOnce);
+        action.clampWhenFinished = true;
+      }
+      this.actions[key] = action;
+    }
+    this.currentAction = null;
+    this._playAction('idle');
+
+    this.attackHandBones = [];
+    model.traverse(o => {
+      if (o.isBone && (o.name === `${MIXAMO_BONE_PREFIX}RightHand` || o.name === `${MIXAMO_BONE_PREFIX}LeftHand`)) {
+        this.attackHandBones.push(o);
+      }
+    });
+
+    this.speed    = 2.4;
+    this.bpm      = 50 + Math.random() * 40;
+    this.lastBeat = Math.random() * 2;
+
+    this.state            = 'dormant';
+    this.stageTimer       = DORMANT_DURATION();
+    this.warningActive    = false;
+    this.warningTimer     = 0;
+    this.warningDuration  = 0.6;
+    this.phaseTimer       = 0;
+
+    this.isAttacking      = false;
+    this.attackElapsed    = 0;
+    this.attackHitChecked = false;
+
+    this.detection      = 0;
+    this.target         = null;
+    this.lastNoisePos   = null;
+    this.loseTimer       = 0;
+    this._touchedPulses  = new Set();
+
+    this.glowLight = new THREE.PointLight(0xffaa44, 0, 7);
+    this.glowLight.position.y = ENEMY_HEIGHT * 0.5;
+    this.mesh.add(this.glowLight);
+
+    this.heartbeatSndPool = Array.from({ length: HEARTBEAT_VOICES }, () => {
+      const snd = new THREE.PositionalAudio(listener);
+      snd.setBuffer(heartbeatBuffer);
+      snd.setVolume(0);
+      snd.setDistanceModel('linear');
+      snd.setRefDistance(1.5);
+      snd.setMaxDistance(8);
+      snd.setRolloffFactor(1);
+      snd.position.y = ENEMY_HEIGHT * 0.5;
+      this.mesh.add(snd);
+      return snd;
+    });
+    this.heartbeatVoiceIdx = 0;
+  }
+
+  _setHeartbeatVolume(v) {
+    this.heartbeatSndPool.forEach(s => s.setVolume(v));
+  }
+
+  _playAction(name) {
+    const next = this.actions[name];
+    if (this.currentAction === next) return;
+    next.reset().fadeIn(0.2).play();
+    if (this.currentAction) this.currentAction.fadeOut(0.2);
+    this.currentAction = next;
+  }
+
+  _updateBodyPoseLerp(dt) {
+    const inSeizure  = this.state === 'wary';
+    const targetRotX = inSeizure ? SEIZURE_STAND_FIX_X : 0;
+    const targetPosY = inSeizure ? enemyModelYOffset + SEIZURE_STAND_FIX_Y : enemyModelYOffset;
+    const targetPosZ = inSeizure ? SEIZURE_STAND_FIX_Z : 0;
+    const t = Math.min(1, dt * 6);
+    this.bodyModel.rotation.x += (targetRotX - this.bodyModel.rotation.x) * t;
+    this.bodyModel.position.y += (targetPosY - this.bodyModel.position.y) * t;
+    this.bodyModel.position.z += (targetPosZ - this.bodyModel.position.z) * t;
+  }
+
+  dispose() {
+    scene.remove(this.mesh);
+    this.heartbeatSndPool.forEach(s => { if (s.isPlaying) s.stop(); });
+  }
+
+  _registerNoise(pos, amount) {
+    this.detection    = Math.min(DETECTION_THRESHOLD, this.detection + amount);
+    this.lastNoisePos = pos.clone();
+    if (this.state === 'alert') {
+      this.target    = pos.clone();
+      this.loseTimer = 0;
+    }
+  }
+
+  _checkPulseTouch(playerPos, moving, dt) {
+    const dist = playerPos.distanceTo(this.mesh.position);
+    if (moving && dist < HEARING_RADIUS) this._registerNoise(playerPos, MOVE_NOISE_RATE * dt);
+    activePulses.forEach(p => {
+      if (p.isEnemy) return;
+      const d = this.mesh.position.distanceTo(new THREE.Vector3(p.ox, 0, p.oz));
+      if (Math.abs(d - p.radius) < 0.4 && !this._touchedPulses.has(p)) {
+        this._touchedPulses.add(p);
+        this._registerNoise(playerPos, PULSE_TOUCH_GAIN);
+      }
+    });
+  }
+
+  _enterCycleStage(stage) {
+    const cameFromWary = this.state === 'wary';
+    this.state = stage;
+    if (stage === 'dormant') {
+      this.stageTimer = DORMANT_DURATION();
+      if (cameFromWary) {
+        this.bodyModel.rotation.x = 0;
+        this.bodyModel.position.y = enemyModelYOffset;
+        this.bodyModel.position.z = 0;
+        const idleAction = this.actions.idle;
+        idleAction.reset().play();
+        if (this.currentAction) this.currentAction.stop();
+        this.currentAction = idleAction;
+      }
+    }
+    else if (stage === 'searching') this.stageTimer = SEARCHING_DURATION();
+    else {
+      this.stageTimer = WARY_DURATION();
+      this.bodyModel.rotation.x = SEIZURE_STAND_FIX_X;
+      this.bodyModel.position.y = enemyModelYOffset + SEIZURE_STAND_FIX_Y;
+      this.bodyModel.position.z = SEIZURE_STAND_FIX_Z;
+      const seizureAction = this.actions.seizure;
+      seizureAction.reset().play();
+      if (this.currentAction) this.currentAction.stop();
+      this.currentAction = seizureAction;
+    }
+  }
+
+  _enterAwakened() {
+    this.state         = 'awakened';
+    this.phaseTimer    = enemyClips.scream.duration;
+    this.warningActive = false;
+    BPM.current = BPM.max;
+    BPM.target  = BPM.max;
+    setMeshMaterial(this.mesh, enemyAwakenMat);
+    this._setHeartbeatVolume(0);
+    this.glowLight.color.set(0xff2222);
+    this.glowLight.intensity = 4;
+    this._playAction('scream');
+    spawnPulse(this.mesh.position, 0xffffff, 9, true, 9);
+    triggerScreamFlash();
+
+    enemies.forEach(other => {
+      if (other === this || other.state === 'alert') return;
+      if (other.mesh.position.distanceTo(this.mesh.position) <= INFECT_RADIUS) {
+        other._infect(this.mesh.position);
+      }
+    });
+  }
+
+  _infect(targetPos) {
+    setMeshMaterial(this.mesh, enemyAwakenMat);
+    this.glowLight.color.set(0xff2222);
+    this.glowLight.intensity = 4;
+    this._playAction('scream');
+    triggerScreamFlash();
+    this._beginChase(targetPos);
+
+    enemies.forEach(other => {
+      if (other === this || other.state === 'alert') return;
+      if (other.mesh.position.distanceTo(this.mesh.position) <= INFECT_RADIUS) {
+        other._infect(this.mesh.position);
+      }
+    });
+  }
+
+  _beginChase(targetPos) {
+    this.state          = 'alert';
+    setMeshMaterial(this.mesh, enemyAwakenMat);
+    this.target          = (targetPos || this.lastNoisePos || this.mesh.position).clone();
+    this.loseTimer        = 0;
+    this.isAttacking      = false;
+    this.detection        = DETECTION_THRESHOLD;
+    this.warningActive   = false;
+    this.glowLight.intensity = 0;
+    this._setHeartbeatVolume(0);
+    this._playAction('run');
+  }
+
+  _updateBeatPulse(dt, elapsed, beatInterval) {
+    if (!this.warningActive && elapsed - this.lastBeat > beatInterval) {
+      this.lastBeat        = elapsed;
+      this.warningActive   = true;
+      this.warningTimer    = 0;
+      this._touchedPulses  = new Set();
+      spawnEnemyPulse(this);
+      const snd = this.heartbeatSndPool[this.heartbeatVoiceIdx];
+      this.heartbeatVoiceIdx = (this.heartbeatVoiceIdx + 1) % this.heartbeatSndPool.length;
+      if (snd.isPlaying) snd.stop();
+      snd.play();
+    }
+    if (this.warningActive) {
+      this.warningTimer += dt;
+      if (this.warningTimer >= this.warningDuration) this.warningActive = false;
+    }
+  }
+
+  update(dt, playerPos, elapsed, moving) {
+    this.mixer.update(dt);
+    this._updateBodyPoseLerp(dt);
+
+    if (this.state === 'alert') {
+      this._setHeartbeatVolume(0.7);
+      this._updateBeatPulse(dt, elapsed, AWAKENED_BEAT_INTERVAL);
+      this._checkPulseTouch(playerPos, moving, dt);
+
+      this.loseTimer += dt;
+      if (this.loseTimer > ALERT_LOSE_TIMEOUT) {
+        this._enterCycleStage('dormant');
+        setMeshMaterial(this.mesh, enemyGhostMat);
+        this.mesh.quaternion.identity();
+        this.detection      = 0;
+        this.target         = null;
+        this.isAttacking    = false;
+        return;
+      }
+
+      const dxAtk   = playerPos.x - this.mesh.position.x;
+      const dzAtk   = playerPos.z - this.mesh.position.z;
+      const inRange = Math.hypot(dxAtk, dzAtk) <= ENEMY_ATTACK_RANGE;
+
+      if (this.isAttacking) {
+        this.attackElapsed += dt;
+        if (!this.attackHitChecked) {
+          this.mesh.updateMatrixWorld(true);
+          for (const bone of this.attackHandBones) {
+            bone.getWorldPosition(_handWorldPos);
+            if (_handWorldPos.distanceTo(playerPos) <= ENEMY_ATTACK_HIT_RADIUS) {
+              this.attackHitChecked = true;
+              triggerGameOver();
+              break;
+            }
+          }
+        }
+        if (this.attackElapsed >= enemyClips.punch.duration) {
+          this.isAttacking = false;
+        }
+        return;
+      }
+
+      if (inRange) {
+        this.isAttacking      = true;
+        this.attackElapsed    = 0;
+        this.attackHitChecked = false;
+        this._playAction('punch');
+        return;
+      }
+
+      if (this.target) {
+        const toTarget = this.target.distanceTo(this.mesh.position);
+        if (toTarget > ARRIVE_DIST) {
+          this._playAction('run');
+          const dir = new THREE.Vector3()
+            .subVectors(this.target, this.mesh.position).setY(0).normalize();
+          const p = this.mesh.position;
+          const nextX = p.x + dir.x * this.speed * dt;
+          const nextZ = p.z + dir.z * this.speed * dt;
+          if (!blockedAt(nextX, p.z)) p.x = nextX;
+          if (!blockedAt(p.x, nextZ)) p.z = nextZ;
+          _lookFlatTarget.set(this.target.x, this.mesh.position.y, this.target.z);
+          _lookMatrix.lookAt(this.mesh.position, _lookFlatTarget, this.mesh.up);
+          _lookQuat.setFromRotationMatrix(_lookMatrix);
+          this.mesh.quaternion.slerp(_lookQuat, Math.min(1, dt * 6));
+        } else {
+          this._playAction('idle');
+        }
+      }
+      return;
+    }
+
+    if (this.state === 'awakened') {
+      this._setHeartbeatVolume(0.8);
+      this._updateBeatPulse(dt, elapsed, AWAKENED_BEAT_INTERVAL);
+      this.phaseTimer -= dt;
+      if (this.phaseTimer <= 0) {
+        this._beginChase();
+      }
+      return;
+    }
+
+    this._checkPulseTouch(playerPos, moving, dt);
+
+    if (this.state !== 'dormant' && this.detection >= DETECTION_THRESHOLD) {
+      this._enterAwakened();
+      return;
+    }
+
+    this.detection = Math.max(0, this.detection - dt * DETECTION_DECAY);
+
+    this.stageTimer -= dt;
+    if (this.stageTimer <= 0) {
+      if (this.state === 'dormant')        this._enterCycleStage('searching');
+      else if (this.state === 'searching') this._enterCycleStage('wary');
+      else                                   this._enterCycleStage('dormant');
+    }
+
+    if (this.state === 'dormant') {
+      this._playAction('idle');
+      this.glowLight.intensity = 0;
+      this._setHeartbeatVolume(0);
+    } else if (this.state === 'searching') {
+      this._playAction('idle');
+      this.glowLight.color.set(0xffaa44);
+      this.glowLight.intensity = 0.8;
+      this._setHeartbeatVolume(0.4);
+      this._updateBeatPulse(dt, elapsed, SEARCHING_BEAT_INTERVAL);
+    } else {
+      this._playAction('seizure');
+      this.glowLight.color.set(0xff5522);
+      this.glowLight.intensity = 2.2;
+      this._setHeartbeatVolume(0.6);
+      this._updateBeatPulse(dt, elapsed, WARY_BEAT_INTERVAL);
+    }
+  }
+}
+
+BAY_CENTERS.forEach(([x, z]) => {
+  enemies.push(new Enemy(x, z));
+});
+
+// 7-1. 플레이어 근접 공격 (칼)
+const ATTACK_RANGE = ARRIVE_DIST * 1.5;
+function attemptAttack() {
+  for (let i = 0; i < enemies.length; i++) {
+    const enemy = enemies[i];
+    const dx = camera.position.x - enemy.mesh.position.x;
+    const dz = camera.position.z - enemy.mesh.position.z;
+    const horizDist = Math.hypot(dx, dz);
+    if (horizDist <= ATTACK_RANGE) {
+      const killPos = enemy.mesh.position.clone();
+      enemy.dispose();
+      enemies.splice(i, 1);
+      spawnPulse(killPos, 0xffffff, 3, false, 10);
+      return;
+    }
+  }
+}
+
+// 8. BPM → 시각 효과 매핑
+let screamFlash = 0;
+const SCREAM_FLASH_DURATION = 2.0;
+function triggerScreamFlash() { screamFlash = 1; }
+
+function applyVisualState(bpmNorm, stage) {
+  scene.fog = null;
+
+  let giIntensity;
+  if (stage === 'calm')       giIntensity = 0.0;
+  else if (stage === 'tense') giIntensity = THREE.MathUtils.lerp(0.03, 0.4, (BPM.current - 90) / 40);
+  else                        giIntensity = THREE.MathUtils.lerp(0.4,  1.8, (BPM.current - 130) / 30);
+
+  const flash = screamFlash;
+  giIntensity = THREE.MathUtils.lerp(giIntensity, 1.8, flash);
+
+  ambientLight.intensity = giIntensity;
+  if (stage === 'calm')       ambientLight.color.set(0x050a06);
+  else if (stage === 'tense') ambientLight.color.set(0x08101e);
+  else                        ambientLight.color.set(0x201408);
+  ambientLight.color.lerp(new THREE.Color(0x201408), flash);
+
+  lightProbes.forEach(probe => { probe.intensity = giIntensity * 0.4; });
+
+  let plIntensity;
+  if (stage === 'calm')       plIntensity = 0;
+  else if (stage === 'tense') plIntensity = THREE.MathUtils.lerp(0, 2, (BPM.current - 90) / 40);
+  else                        plIntensity = THREE.MathUtils.lerp(2, 6, (BPM.current - 130) / 30);
+  plIntensity = THREE.MathUtils.lerp(plIntensity, 6, flash);
+
+  pointLights.forEach(pl => {
+    pl.intensity = plIntensity;
+    if (stage === 'panic') pl.color.set(0xffaa44);
+    else                   pl.color.set(0x334466);
+    pl.color.lerp(new THREE.Color(0xffaa44), flash);
+  });
+
+  let dirIntensity;
+  if (stage === 'calm')       dirIntensity = 0.0;
+  else if (stage === 'tense') dirIntensity = THREE.MathUtils.lerp(0.0, 0.4, (BPM.current - 90) / 40);
+  else                        dirIntensity = THREE.MathUtils.lerp(0.4, 1.0, (BPM.current - 130) / 30);
+  dirLight.intensity = THREE.MathUtils.lerp(dirIntensity, 1.0, flash);
+
+  if (stage === 'calm') {
+    scene.background.set(0x000000);
+  } else {
+    const bgVal = THREE.MathUtils.lerp(0, 0.04, bpmNorm);
+    scene.background.setRGB(bgVal * 0.5, bgVal * 0.5, bgVal);
+  }
+  scene.background.lerp(new THREE.Color(0x0a0a14), flash);
+}
+
+// 9. HUD 업데이트
+const bpmValEl    = document.getElementById('bpm-val');
+const bpmBarEl    = document.getElementById('bpm-bar');
+const stageLabelEl = document.getElementById('stage-label');
+
+const stageColors = { calm: '#1D9E75', tense: '#378ADD', panic: '#EF9F27' };
+const stageTexts  = {
+  calm:  'CALM — sonar vision',
+  tense: 'TENSE — enemies alert',
+  panic: 'PANIC — full visibility',
+};
+
+function updateHUD(stage) {
+  const bpm = Math.round(BPM.current);
+  const pct = ((BPM.current - BPM.min) / (BPM.max - BPM.min) * 100).toFixed(0);
+  bpmValEl.textContent     = bpm;
+  bpmBarEl.style.width     = pct + '%';
+  bpmBarEl.style.background = stageColors[stage];
+  stageLabelEl.textContent  = stageTexts[stage];
+}
+
+// 10. 심박 타이밍
+let lastBeat = 0;
+
+function getBeatInterval() {
+  return 60 / BPM.current;
+}
+
+let lastFootstep = 0;
+const FOOTSTEP_BASE_INTERVAL = 0.45;
+
+// 11. 플레이어 이동
+const velocity = new THREE.Vector3();
+const direction = new THREE.Vector3();
+
+const PLAYER_RADIUS = 0.35;
+function blockedAt(x, z, radius = PLAYER_RADIUS) {
+  for (const w of walls) {
+    const { hx, hz } = w.userData;
+    if (Math.abs(x - w.position.x) < hx + radius &&
+        Math.abs(z - w.position.z) < hz + radius) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const WALK_SPEED      = 3.5;
+const RUN_SPEED        = 6;
+const STAND_HEIGHT     = 1.6;
+const CROUCH_HEIGHT    = STAND_HEIGHT * 0.6;
+let playerSpeed  = WALK_SPEED;
+let playerMoving = false;
+let playerSneaking = false;
+
+function movePlayer(dt) {
+  if (!controls.isLocked) { playerMoving = false; return; }
+
+  let speed = WALK_SPEED;
+  if      (keys['ShiftLeft'])   speed = RUN_SPEED;
+  else if (keys['KeyC'])        speed = WALK_SPEED * 0.5;
+  playerSpeed = speed;
+
+  direction.set(0, 0, 0);
+  if (keys['KeyW']) direction.z -= 1;
+  if (keys['KeyS']) direction.z += 1;
+  if (keys['KeyA']) direction.x -= 1;
+  if (keys['KeyD']) direction.x += 1;
+  direction.normalize();
+
+  playerMoving = direction.length() > 0;
+  velocity.set(0, 0, 0);
+  if (playerMoving) {
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.y = 0; forward.normalize();
+    const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+
+    velocity.addScaledVector(forward, -direction.z);
+    velocity.addScaledVector(right,    direction.x);
+    velocity.normalize().multiplyScalar(speed * dt);
+  }
+
+  const p = controls.getObject().position;
+  const nextX = p.x + velocity.x;
+  const nextZ = p.z + velocity.z;
+  if (!blockedAt(nextX, p.z)) p.x = nextX;
+  if (!blockedAt(p.x, nextZ)) p.z = nextZ;
+
+  const targetHeight = keys['KeyC'] ? CROUCH_HEIGHT : STAND_HEIGHT;
+  p.y += (targetHeight - p.y) * Math.min(1, dt * 8);
+
+  playerSneaking = playerMoving && keys['KeyC'] && !keys['ShiftLeft'];
+}
+
+// 11-1. 게임오버
+let gameOver = false;
+const gameoverEl = document.getElementById('gameover');
+function triggerGameOver() {
+  if (gameOver) return;
+  gameOver = true;
+  controls.unlock();
+  gameoverEl.style.display = 'flex';
+}
+gameoverEl.addEventListener('click', () => location.reload());
+
+// 12. 메인 루프
+const clock = new THREE.Clock();
+
+function animate() {
+  if (gameOver) return;
+  requestAnimationFrame(animate);
+
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const elapsed = clock.getElapsedTime();
+
+  BPM.update(dt);
+
+  screamFlash = Math.max(0, screamFlash - dt / SCREAM_FLASH_DURATION);
+
+  const stage = BPM.getStage();
+  const norm  = BPM.getNormalized();
+
+  applyVisualState(norm, stage);
+  updateHUD(stage);
+
+  movePlayer(dt);
+
+  const playerPos = camera.position;
+  const moving    = !!(keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD']);
+  enemies.forEach(e => e.update(dt, playerPos, elapsed, moving));
+
+  if (elapsed - lastBeat > getBeatInterval() * 2) {
+    lastBeat = elapsed;
+    triggerHeartbeatGlow();
+  }
+  heartbeatElapsed += dt;
+  const hbEnvelope = heartbeatElapsed < HEARTBEAT_ATTACK
+    ? heartbeatElapsed / HEARTBEAT_ATTACK
+    : Math.exp(-(heartbeatElapsed - HEARTBEAT_ATTACK) / HEARTBEAT_RELEASE);
+  heartbeatLight.position.copy(camera.position);
+  heartbeatLight.intensity = hbEnvelope * 14;
+
+  const stepInterval = FOOTSTEP_BASE_INTERVAL * (WALK_SPEED / playerSpeed);
+  if (playerMoving && elapsed - lastFootstep > stepInterval) {
+    lastFootstep = elapsed;
+    spawnPlayerFootstepPulse();
+  }
+
+  updateRays(dt);
+
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
+</body>
+</html>
