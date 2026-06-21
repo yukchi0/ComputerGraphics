@@ -54,9 +54,10 @@ for (let ix = 0; ix < probeGrid.x; ix++) {
   }
 }
 ```
-
+calm상태에서의 암흑
 ![calm상태에서의 암흑](screenshots/calm.png)
 
+panic상태에서의 시야증가
 ![panic상태에서의 시야증가](screenshots/panic.png)
 
 ---
@@ -89,8 +90,11 @@ function applyVisualState(bpmNorm, stage) {
 | 90–130 | tense | 0.03 ~ 0.4 | ×0.4 | 0 ~ 2 | 0.0 ~ 0.4 |
 | 130–160 | panic | 0.4 ~ 1.8 | ×0.4 | 2 ~ 6 | 0.4 ~ 1.0 |
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *tense 구간에서 벽과 바닥에 은은한 파란 간접광이 들어오는 모습 / panic 구간에서 주황빛으로 가득 찬 씬 캡처*
+tense의 파란 빛
+![tense의 파란 빛](screenshots/tense_light.png)
+
+panic의 파란 빛
+![panic의 파란 빛](screenshots/panic_light.png)
 
 ---
 
@@ -131,8 +135,8 @@ void main() {
 
 파동은 플레이어 발소리, 적의 심박 2가지 원인으로 생성되며, 반사파(reflect pulse)는 벽 충돌 지점에서 2차 파동을 생성하여 씬의 형태를 간접적으로 드러낸다.
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *플레이어가 달릴 때 바닥에 초록빛 소나 파동이 퍼지는 모습 / 벽에서 반사파가 생성되는 모습*
+플레이어가 달릴 때 바닥에 초록빛 소나 파동이 퍼지는 모습 / 벽에서 반사파가 생성되는 모습
+![초록 반사파](screenshots/green_sonar.png)
 
 ---
 
@@ -154,8 +158,8 @@ void main() {
 }
 ```
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *소나 파동이 적을 통과하는 순간 적의 실루엣이 밝게 드러나는 화면*
+소나 파동이 적을 통과하는 순간 적의 실루엣이 밝게 드러나는 화면
+![파동이 지나가는 적](screenshots/green.png)
 
 ---
 
@@ -176,9 +180,6 @@ void main() {
 ```
 
 각 bay에는 상자(crate) 2개가 배치되어 플레이어가 숨거나 적을 유인하는 데 활용된다.
-
-> **[게임 캡처 이미지 삽입 위치]**  
-> *소나 파동으로 드러나는 맵 전체 구조 캡처*
 
 ---
 
@@ -201,8 +202,14 @@ const BPM = {
 
 BPM에 따라 결정되는 스테이지(calm/tense/panic)는 GI 강도, HUD 색상, 소나 파동 크기, 심박 사운드 볼륨에 모두 연동된다.
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *좌상단 HUD에 심박수(BPM)와 스테이지가 표시되는 화면. calm(초록), tense(파랑), panic(주황) 각 상태 캡처*
+calm 상태
+![calm](screenshots/beat_calm.png)
+
+tense 상태
+![tense](screenshots/beat_tense.png)
+
+panic 상태
+![panic](screenshots/beat_panic.png)
 
 ---
 
@@ -227,8 +234,11 @@ dormant ──(타이머)──▶ searching ──(타이머)──▶ wary
 
 **감염(infect) 전파**: 한 적이 `awakened` 상태가 되면 반경 8 유닛 내 다른 적도 연쇄 각성한다.
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *적이 searching 상태에서 주황빛 심박 파동을 방출하는 모습 / alert 상태에서 빨간 머티리얼로 변한 적이 플레이어를 추적하는 모습*
+searching
+![searching상태의 적](screenshots/red.png)
+
+alert
+![alert 상태의 적](screenshots/chasing.png)
 
 ---
 
@@ -241,9 +251,6 @@ dormant ──(타이머)──▶ searching ──(타이머)──▶ wary
 | 적 심박 | 빨강(0xdd2222) | 2.7~4.7 | 3~7 | 플레이어 탐지에 사용됨 |
 | 반사파 | 원본과 동일 | 원본 ×0.4 | 원본 ×0.8 | 벽 충돌 시 생성 |
 | 처치 이펙트 | 흰색(0xffffff) | 10 | 10 | 적 처치 시 생성 |
-
-> **[게임 캡처 이미지 삽입 위치]**  
-> *벽에서 반사파가 갈라지는 모습 / 적 처치 시 흰색 파동이 퍼지는 모습*
 
 ---
 
@@ -258,8 +265,8 @@ const hbEnvelope = heartbeatElapsed < HEARTBEAT_ATTACK
 heartbeatLight.intensity = hbEnvelope * 14;
 ```
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *심박 타이밍에 맞춰 플레이어 주변 바닥이 순간적으로 밝아지는 모습*
+심장박동에 따라 살짝 밝아져 벽이 보이는 상태
+![심장박동](screenshots/green_beat.png)
 
 ---
 
@@ -277,8 +284,6 @@ Mixamo에서 다운로드한 FBX 파일을 `FBXLoader`로 불러오고, 본(bone
 | attack | Zombie Punching.fbx |
 | awakened | Zombie Scream.fbx |
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *wary 상태에서 경련(seizure) 모션을 취하는 적 / alert 상태에서 달려오는 적 캡처*
 
 ---
 
@@ -301,8 +306,6 @@ if (!blockedAt(nextX, p.z)) p.x = nextX;
 if (!blockedAt(p.x, nextZ)) p.z = nextZ;
 ```
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *플레이어가 벽 모서리를 따라 이동하는 모습*
 
 ---
 
@@ -310,8 +313,6 @@ if (!blockedAt(p.x, nextZ)) p.z = nextZ;
 
 Three.js `PositionalAudio`를 사용하여 적의 심박 소리가 3D 공간에서 거리에 따라 감쇠한다. `setDistanceModel('linear')`, `setRefDistance(1.5)`, `setMaxDistance(8)` 설정으로 8 유닛 이내에서만 들리도록 하여 소나 파동의 시각적 감지 범위와 청각적 감지 범위를 연동하였다.
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *적 근처에서 심박 사운드 범위를 표현한 화면 (소나 파동 반경과 비교)*
 
 ---
 
