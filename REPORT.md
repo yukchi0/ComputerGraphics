@@ -55,8 +55,9 @@ for (let ix = 0; ix < probeGrid.x; ix++) {
 }
 ```
 
-> **[게임 캡처 이미지 삽입 위치]**  
-> *calm 상태 → 완전한 암흑 / panic 상태 → GI 활성화로 벽면이 붉게 물드는 화면*
+![calm상태에서의 암흑](screenshots/calm.png)
+
+![panic상태에서의 시야증가](screenshots/panic.png)
 
 ---
 
